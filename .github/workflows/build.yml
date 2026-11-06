@@ -1,0 +1,325 @@
+# Builds the installers and publishes them. This file runs in the public chronos-releases repository,
+# where builds are free. The code itself stays private: each job downloads it with a read-only key.
+# See "How to run and build" in the README. A copy lives in the private repository, in
+# .github/public-build, and changes are copied across by hand.
+#
+# Kept safe on purpose, because anyone can read this file and its logs:
+# - Only someone with write access can start it. Nothing here runs for strangers' pull requests.
+# - Outside tools are fixed to exact versions, because they run with the signing keys.
+# - Signing keys and the code key are only given to the steps that need them.
+# - Nothing the build makes is saved except the installers, which are public anyway.
+name: Build installers
+
+on:
+  workflow_dispatch:
+    inputs:
+      platforms:
+        description: Which installers to build
+        type: choice
+        default: all
+        options: [all, windows, mac, android]
+
+permissions:
+  contents: read
+
+env:
+  # The publishable key is designed to be public, and it's already inside every installer.
+  VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+  VITE_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.VITE_SUPABASE_PUBLISHABLE_KEY }}
+  # Must match RELEASES_REPO in src/core/updates.ts and the address in tauri.conf.json.
+  RELEASES_OWNER: DimensionalFreak
+  RELEASES_NAME: chronos-releases
+  CODE_REPO: DimensionalFreak/chronos
+
+jobs:
+  # Nothing is built, let alone published, unless the checks pass.
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: ${{ env.CODE_REPO }}
+          token: ${{ secrets.CHRONOS_CODE_TOKEN }}
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: lts/*
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+
+  # Makes the draft first, so the three builds below can't race to create it.
+  release:
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      id: ${{ steps.draft.outputs.id }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: ${{ env.CODE_REPO }}
+          token: ${{ secrets.CHRONOS_CODE_TOKEN }}
+          persist-credentials: false
+      - id: version
+        run: echo "tag=app-v$(jq -r .version src-tauri/tauri.conf.json)" >> "$GITHUB_OUTPUT"
+      - name: Warn if the server details are missing
+        if: env.VITE_SUPABASE_URL == '' || env.VITE_SUPABASE_PUBLISHABLE_KEY == ''
+        run: echo "::warning::VITE_SUPABASE_URL or VITE_SUPABASE_PUBLISHABLE_KEY is not set, so this build can't sign in or sync."
+      - name: Create the draft, or carry on with an unfinished one
+        id: draft
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          REPO="$RELEASES_OWNER/$RELEASES_NAME"
+          FOUND=$(gh api "repos/$REPO/releases?per_page=100" --jq "map(select(.tag_name == \"$TAG\")) | first // empty")
+          if [ -n "$FOUND" ] && [ "$(jq -r .draft <<< "$FOUND")" = "false" ]; then
+            echo "::error::$TAG is already published. Raise the version first, because installed apps would never see a rebuilt one."
+            exit 1
+          fi
+          if [ -z "$FOUND" ]; then
+            FOUND=$(gh api "repos/$REPO/releases" -f tag_name="$TAG" -f name="Chronos $TAG" -F draft=true \
+              -f body="Pick the file for your device below.")
+          fi
+          echo "id=$(jq -r .id <<< "$FOUND")" >> "$GITHUB_OUTPUT"
+
+  windows:
+    needs: release
+    if: inputs.platforms == 'all' || inputs.platforms == 'windows'
+    runs-on: windows-latest
+    timeout-minutes: 45
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: ${{ env.CODE_REPO }}
+          token: ${{ secrets.CHRONOS_CODE_TOKEN }}
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: lts/*
+          cache: npm
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+      - uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          workspaces: ./src-tauri -> target
+      - run: npm ci
+      - uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # v1
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          owner: ${{ env.RELEASES_OWNER }}
+          repo: ${{ env.RELEASES_NAME }}
+          releaseId: ${{ needs.release.outputs.id }}
+          tagName: ${{ needs.release.outputs.tag }}
+          releaseDraft: true
+          uploadUpdaterJson: false
+          args: --bundles nsis
+
+  mac:
+    needs: release
+    if: inputs.platforms == 'all' || inputs.platforms == 'mac'
+    # GitHub is often short of Apple-chip Macs, and a job gives up after 15 minutes with none free.
+    # This Intel Mac still builds the one app that runs on both kinds. Change it if GitHub retires this label.
+    runs-on: macos-15-intel
+    timeout-minutes: 45
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: ${{ env.CODE_REPO }}
+          token: ${{ secrets.CHRONOS_CODE_TOKEN }}
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: lts/*
+          cache: npm
+      # One .dmg that runs on both Apple Silicon and Intel Macs.
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          workspaces: ./src-tauri -> target
+      - run: npm ci
+      - uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # v1
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          owner: ${{ env.RELEASES_OWNER }}
+          repo: ${{ env.RELEASES_NAME }}
+          releaseId: ${{ needs.release.outputs.id }}
+          tagName: ${{ needs.release.outputs.tag }}
+          releaseDraft: true
+          uploadUpdaterJson: false
+          # The Mac sometimes fails with "Resource busy" making the .dmg, when its scanner holds the
+          # new disk image open. See https://github.com/actions/runner-images/issues/7522
+          # Trying again usually clears it.
+          retryAttempts: 2
+          args: --target universal-apple-darwin --bundles app,dmg
+
+  android:
+    needs: release
+    if: inputs.platforms == 'all' || inputs.platforms == 'android'
+    # This runner comes with the Android SDK and NDK already installed.
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ needs.release.outputs.tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: ${{ env.CODE_REPO }}
+          token: ${{ secrets.CHRONOS_CODE_TOKEN }}
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: lts/*
+          cache: npm
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6
+        with:
+          distribution: temurin
+          java-version: '17'
+      # 64-bit only: every current Samsung phone is, and it keeps the build short.
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+          targets: aarch64-linux-android
+      - uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          workspaces: ./src-tauri -> target
+      - run: npm ci
+      - run: echo "NDK_HOME=$ANDROID_NDK_LATEST_HOME" >> "$GITHUB_ENV"
+
+      # The Android project isn't kept in git, so each build makes it here.
+      - name: Make the Android project if it isn't in git yet
+        run: |
+          if [ ! -d src-tauri/gen/android ]; then
+            npx tauri android init --ci
+          fi
+
+      # A newly made Android project has Tauri's default icon. Made with: npx tauri icon app-icon.json
+      - name: Use the Chronos icon
+        run: cp -r src-tauri/icons/android/. src-tauri/gen/android/app/src/main/res/
+
+      - name: Add the home-screen widget
+        run: |
+          MAIN=src-tauri/gen/android/app/src/main
+          cp -r src-tauri/android-extras/res/. "$MAIN/res/"
+          cp src-tauri/android-extras/kotlin/*.kt "$MAIN/java/app/chronos/personal/"
+          cp src-tauri/android-extras/chronos.pro src-tauri/gen/android/app/
+          node scripts/android-widget.ts "$MAIN/AndroidManifest.xml" "$MAIN/java/app/chronos/personal/MainActivity.kt"
+
+      - name: Turn on release signing
+        run: node scripts/android-signing.ts src-tauri/gen/android/app/build.gradle.kts
+      - name: Unpack the signing key
+        env:
+          ANDROID_KEY_BASE64: ${{ secrets.ANDROID_KEY_BASE64 }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if [ -z "$ANDROID_KEY_BASE64" ] || [ -z "$ANDROID_KEY_PASSWORD" ]; then
+            echo "::warning::The Android signing key isn't set up, so this .apk is unsigned and a phone will refuse to install it."
+            exit 0
+          fi
+          printf '%s' "$ANDROID_KEY_BASE64" | base64 -d > "$RUNNER_TEMP/chronos.keystore"
+          {
+            echo "keyAlias=upload"
+            echo "password=$ANDROID_KEY_PASSWORD"
+            echo "storeFile=$RUNNER_TEMP/chronos.keystore"
+          } > src-tauri/gen/android/keystore.properties
+
+      - run: npx tauri android build --apk --target aarch64 --ci
+
+      - name: Add the .apk to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          APK=$(find src-tauri/gen/android/app/build/outputs/apk -name '*.apk' | head -n 1)
+          if [ -z "$APK" ]; then echo "::error::No .apk was produced."; exit 1; fi
+          case "$APK" in
+            *unsigned*) NAME="Chronos-android-UNSIGNED.apk" ;;
+            *) NAME="Chronos-android.apk" ;;
+          esac
+          cp "$APK" "$RUNNER_TEMP/$NAME"
+          gh release upload "$TAG" "$RUNNER_TEMP/$NAME" --clobber --repo "$RELEASES_OWNER/$RELEASES_NAME"
+
+  # Runs only when everything was built, so no device is ever offered half a release.
+  publish:
+    needs: [release, windows, mac, android]
+    if: inputs.platforms == 'all'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ needs.release.outputs.tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: ${{ env.CODE_REPO }}
+          token: ${{ secrets.CHRONOS_CODE_TOKEN }}
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: lts/*
+      - name: Refuse a release without a signed phone file
+        run: gh release view "$TAG" --repo "$RELEASES_OWNER/$RELEASES_NAME" --json assets --jq '.assets[].name' | grep -qx 'Chronos-android.apk'
+      - name: Make the file that tells apps about this update
+        run: |
+          REPO="$RELEASES_OWNER/$RELEASES_NAME"
+          mkdir "$RUNNER_TEMP/sigs"
+          gh release download "$TAG" --repo "$REPO" --pattern '*.sig' --dir "$RUNNER_TEMP/sigs"
+          node scripts/make-latest-json.ts "$RUNNER_TEMP/sigs" "$REPO" "$TAG" "${TAG#app-v}" > "$RUNNER_TEMP/latest.json"
+          gh release upload "$TAG" "$RUNNER_TEMP/latest.json" --clobber --repo "$REPO"
+      - name: Publish the release
+        run: gh release edit "$TAG" --repo "$RELEASES_OWNER/$RELEASES_NAME" --draft=false --latest
+
+  # The website goes out with every release. It's on the gh-pages branch of this repository.
+  website:
+    needs: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: ${{ env.CODE_REPO }}
+          token: ${{ secrets.CHRONOS_CODE_TOKEN }}
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: lts/*
+          cache: npm
+      - run: npm ci
+      - run: npm run build:web
+      - name: Publish the website
+        env:
+          GH_TOKEN: ${{ github.token }}
+        working-directory: dist-web
+        run: |
+          git init -q -b gh-pages
+          git config user.name "Chronos build"
+          git config user.email "actions@users.noreply.github.com"
+          git add -A
+          git commit -q -m "Website"
+          git -c "http.extraheader=AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)" \
+            push --force "https://github.com/$RELEASES_OWNER/$RELEASES_NAME.git" gh-pages
