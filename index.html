@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta http-equiv="Content-Security-Policy" content="default-src &#39;self&#39;; script-src &#39;self&#39; &#39;wasm-unsafe-eval&#39;; object-src &#39;none&#39;; base-uri &#39;self&#39;; form-action &#39;none&#39;; connect-src &#39;self&#39; https://*.supabase.co wss://*.supabase.co https://geocoding-api.open-meteo.com; img-src &#39;self&#39; data:; style-src &#39;self&#39; &#39;unsafe-inline&#39;; font-src &#39;self&#39; data:">
+    <meta name="referrer" content="no-referrer">
+
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>Chronos</title>
+    <script type="module" crossorigin src="./assets/index-C9SCBAAH.js"></script>
+    <link rel="modulepreload" crossorigin href="./assets/rolldown-runtime-BCiCTKAo.js">
+    <link rel="modulepreload" crossorigin href="./assets/luxon-CnRqhQiE.js">
+    <link rel="modulepreload" crossorigin href="./assets/context-BgXryBdi.js">
+    <link rel="modulepreload" crossorigin href="./assets/core-DfmPYgvp.js">
+    <link rel="modulepreload" crossorigin href="./assets/createLucideIcon-B_wDQUJO.js">
+    <link rel="stylesheet" crossorigin href="./assets/index-1AuMgUIa.css">
+    <link rel="manifest" href="./manifest.webmanifest">
+    <link rel="apple-touch-icon" href="./icon-180.png">
+    <meta name="theme-color" content="#0b0f20">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-title" content="Chronos">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  </head>
+  <body>
+    <div id="root"></div>
+    <div id="glass-light" aria-hidden="true"></div>
+    <svg width="0" height="0" style="position: absolute" aria-hidden="true">
+      <filter id="liquid" x="0" y="0" width="100%" height="100%" color-interpolation-filters="sRGB">
+        <feTurbulence type="fractalNoise" baseFrequency="0.004 0.007" numOctaves="2" seed="11" result="noise" />
+        <feGaussianBlur in="noise" stdDeviation="4" result="soft" />
+        <feDisplacementMap in="SourceGraphic" in2="soft" scale="32" xChannelSelector="R" yChannelSelector="G" />
+      </filter>
+    </svg>
+  </body>
+</html>
