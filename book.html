@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex" />
+    <title>Book a time</title>
+    <style>
+      :root { color-scheme: dark; --bg: #0b1020; --card: #141b33; --ink: #eef6ff; --muted: #9fb0cc; --accent: #8fd0ff; --line: #2a3558; }
+      * { box-sizing: border-box; }
+      body { margin: 0; padding: 20px 16px 48px; font: 16px/1.45 system-ui, sans-serif; color: var(--ink); background: var(--bg); }
+      main { max-width: 560px; margin: 0 auto; }
+      h1 { margin: 0 0 4px; font-size: 24px; }
+      p { margin: 6px 0; }
+      .muted { color: var(--muted); font-size: 14px; }
+      .card { margin: 16px 0; padding: 16px; background: var(--card); border: 1px solid var(--line); border-radius: 16px; }
+      .row { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0; }
+      button, input, textarea { font: inherit; color: inherit; }
+      button.pick { padding: 10px 14px; background: transparent; border: 1px solid var(--line); border-radius: 12px; cursor: pointer; min-height: 44px; }
+      button.pick[aria-pressed="true"] { background: var(--accent); color: #04101c; border-color: var(--accent); }
+      button.go { padding: 12px 18px; min-height: 48px; font-weight: 600; color: #04101c; background: var(--accent); border: 0; border-radius: 12px; cursor: pointer; }
+      button.go:disabled { opacity: 0.5; }
+      label { display: block; margin: 10px 0; font-size: 14px; color: var(--muted); }
+      input, textarea { width: 100%; margin-top: 4px; padding: 10px 12px; background: #0b1020; border: 1px solid var(--line); border-radius: 10px; }
+      .day { margin: 14px 0 6px; font-weight: 600; }
+      .away { position: absolute; left: -9999px; height: 0; overflow: hidden; }
+      .error { color: #ff8da1; }
+      a { color: var(--accent); }
+    </style>
+  </head>
+  <body>
+    <main id="app"><p class="muted">Loading…</p></main>
+    <script>
+      (function () {
+        var app = document.getElementById('app');
+        var params = new URLSearchParams(location.search);
+        var slug = params.get('u') || '';
+        var api = (params.get('api') || '').replace(/\/+$/, '');
+        // Only a Chronos server is accepted, so a link can't send someone's details somewhere else.
+        var onLocal = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
+        var apiOk = /^https:\/\/[a-z0-9]{20}\.supabase\.co$/.test(api) || (onLocal && /^http:\/\/(localhost|127\.0\.0\.1):\d+$/.test(api));
+        var data = null;
+        var chosenDuration = null;
+        var chosenStart = null;
+
+        function el(tag, props, children) {
+          var node = document.createElement(tag);
+          Object.keys(props || {}).forEach(function (key) {
+            if (key === 'class') node.className = props[key];
+            else if (key === 'text') node.textContent = props[key];
+            else node.setAttribute(key, props[key]);
+          });
+          (children || []).forEach(function (child) { node.append(child); });
+          return node;
+        }
+        function say(message, isError) {
+          app.replaceChildren(el('p', { class: isError ? 'error' : 'muted', text: message }));
+        }
+        var dayFormat = new Intl.DateTimeFormat(undefined, { weekday: 'long', day: 'numeric', month: 'long' });
+        var timeFormat = new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' });
+        var zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+        function render() {
+          var duration = String(chosenDuration);
+          var slots = (data.slots[duration] || []).filter(function (ms) { return typeof ms === 'number'; });
+          var picker = el('div', { class: 'row', role: 'group', 'aria-label': 'How long' }, data.durations.map(function (minutes) {
+            var button = el('button', { class: 'pick', type: 'button', 'aria-pressed': String(minutes === chosenDuration), text: minutes + ' min' });
+            button.addEventListener('click', function () { chosenDuration = minutes; chosenStart = null; render(); });
+            return button;
+          }));
+          var days = el('div');
+          if (slots.length === 0) days.append(el('p', { class: 'muted', text: 'No free times right now. Please check back later.' }));
+          var lastDay = '';
+          var row = null;
+          slots.forEach(function (ms) {
+            var label = dayFormat.format(new Date(ms));
+            if (label !== lastDay) {
+              lastDay = label;
+              days.append(el('div', { class: 'day', text: label }));
+              row = el('div', { class: 'row' });
+              days.append(row);
+            }
+            var time = el('button', { class: 'pick', type: 'button', 'aria-pressed': String(ms === chosenStart), text: timeFormat.format(new Date(ms)) });
+            time.addEventListener('click', function () { chosenStart = ms; render(); });
+            row.append(time);
+          });
+          var children = [el('h1', { text: data.title })];
+          if (data.intro) children.push(el('p', { text: data.intro }));
+          children.push(el('p', { class: 'muted', text: 'Times are shown in your time zone (' + zone + ').' }), el('div', { class: 'card' }, [picker, days]));
+          if (chosenStart !== null) children.push(form());
+          app.replaceChildren.apply(app, children);
+        }
+
+        function form() {
+          var name = el('input', { id: 'name', required: '', maxlength: '60', autocomplete: 'name' });
+          var email = el('input', { id: 'email', type: 'email', required: '', maxlength: '120', autocomplete: 'email' });
+          var note = el('textarea', { id: 'note', rows: '3', maxlength: '300' });
+          var trap = el('input', { id: 'website', name: 'website', tabindex: '-1', autocomplete: 'off', 'aria-hidden': 'true' });
+          var message = el('p', { class: 'error', role: 'alert' });
+          var send = el('button', { class: 'go', type: 'submit', text: 'Request this time' });
+          var box = el('form', { class: 'card' }, [
+            el('p', { text: dayFormat.format(new Date(chosenStart)) + ', ' + timeFormat.format(new Date(chosenStart)) + ' (' + chosenDuration + ' min)' }),
+            el('label', { text: 'Your name' }, [name]),
+            el('label', { text: 'Your email' }, [email]),
+            el('label', { text: 'Anything to add? (optional)' }, [note]),
+            el('div', { class: 'away' }, [el('label', { text: 'Leave this empty' }, [trap])]),
+            send,
+            message,
+          ]);
+          box.addEventListener('submit', function (event) {
+            event.preventDefault();
+            send.disabled = true;
+            message.textContent = '';
+            fetch(api + '/functions/v1/book', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ u: slug, startMs: chosenStart, durationMin: chosenDuration, name: name.value, email: email.value, note: note.value, website: trap.value }),
+            })
+              .then(function (response) { return response.json().then(function (body) { return { ok: response.ok, body: body }; }); })
+              .then(function (result) {
+                if (result.ok) return done(name.value);
+                message.textContent = (result.body && result.body.error) || 'Something went wrong. Please try again.';
+                send.disabled = false;
+                if (result.body && /just taken/i.test(result.body.error || '')) load();
+              })
+              .catch(function () { message.textContent = "Couldn't reach the server. Check your connection and try again."; send.disabled = false; });
+          });
+          return box;
+        }
+
+        function pad(n) { return String(n).padStart(2, '0'); }
+        function stamp(ms) { var d = new Date(ms); return d.getUTCFullYear() + pad(d.getUTCMonth() + 1) + pad(d.getUTCDate()) + 'T' + pad(d.getUTCHours()) + pad(d.getUTCMinutes()) + '00Z'; }
+
+        function done(name) {
+          var end = chosenStart + chosenDuration * 60000;
+          var ics = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Chronos//Booking//EN', 'BEGIN:VEVENT', 'UID:' + slug + '-' + chosenStart + '@chronos', 'DTSTAMP:' + stamp(Date.now()), 'DTSTART:' + stamp(chosenStart), 'DTEND:' + stamp(end), 'SUMMARY:' + String(data.title).replace(/[\\;,\n]/g, ' ') + ' (requested)', 'STATUS:TENTATIVE', 'END:VEVENT', 'END:VCALENDAR'].join('\r\n');
+          var link = el('a', { href: URL.createObjectURL(new Blob([ics], { type: 'text/calendar' })), download: 'booking.ics', text: 'Add it to your calendar (tentative)' });
+          app.replaceChildren(el('h1', { text: 'Request sent' }), el('p', { text: 'Thank you, ' + name + '. Your request for ' + dayFormat.format(new Date(chosenStart)) + ' at ' + timeFormat.format(new Date(chosenStart)) + ' has been sent. You will hear back by email once it is confirmed.' }), el('p', {}, [link]));
+        }
+
+        function load() {
+          if (!apiOk || !/^[a-z0-9]{8,24}$/.test(slug)) return say('This booking link is not valid.', true);
+          fetch(api + '/functions/v1/book?u=' + encodeURIComponent(slug))
+            .then(function (response) { return response.json().then(function (body) { return { ok: response.ok, body: body }; }); })
+            .then(function (result) {
+              if (!result.ok) return say('This booking page is not available.', true);
+              data = result.body;
+              if (!chosenDuration || data.durations.indexOf(chosenDuration) < 0) chosenDuration = data.durations[0];
+              chosenStart = null;
+              render();
+            })
+            .catch(function () { say("Couldn't load this page. Check your connection and try again.", true); });
+        }
+        load();
+      })();
+    </script>
+  </body>
+</html>

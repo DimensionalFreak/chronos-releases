@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex" />
+    <title>Reply to an invitation</title>
+    <style>
+      :root { color-scheme: dark; --bg: #0b1020; --card: #141b33; --ink: #eef6ff; --muted: #9fb0cc; --accent: #8fd0ff; --line: #2a3558; }
+      * { box-sizing: border-box; }
+      body { margin: 0; padding: 20px 16px 48px; font: 16px/1.45 system-ui, sans-serif; color: var(--ink); background: var(--bg); }
+      main { max-width: 480px; margin: 0 auto; }
+      h1 { margin: 0 0 4px; font-size: 24px; }
+      p { margin: 6px 0; }
+      .muted { color: var(--muted); font-size: 14px; }
+      .card { margin: 16px 0; padding: 16px; background: var(--card); border: 1px solid var(--line); border-radius: 16px; }
+      .row { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0 4px; }
+      button, input { font: inherit; color: inherit; }
+      button { flex: 1; min-height: 48px; padding: 10px 14px; font-weight: 600; background: transparent; border: 1px solid var(--line); border-radius: 12px; cursor: pointer; }
+      button:disabled { opacity: 0.5; }
+      label { display: block; margin: 10px 0; font-size: 14px; color: var(--muted); }
+      input { width: 100%; margin-top: 4px; padding: 10px 12px; background: #0b1020; border: 1px solid var(--line); border-radius: 10px; }
+      .error { color: #ff8da1; }
+    </style>
+  </head>
+  <body>
+    <main id="app"><p class="muted">Loading…</p></main>
+    <script>
+      (function () {
+        var app = document.getElementById('app');
+        var params = new URLSearchParams(location.search);
+        var token = params.get('t') || '';
+        var api = (params.get('api') || '').replace(/\/+$/, '');
+        var onLocal = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
+        var apiOk = /^https:\/\/[a-z0-9]{20}\.supabase\.co$/.test(api) || (onLocal && /^http:\/\/(localhost|127\.0\.0\.1):\d+$/.test(api));
+        function el(tag, props, children) {
+          var node = document.createElement(tag);
+          Object.keys(props || {}).forEach(function (key) {
+            if (key === 'class') node.className = props[key];
+            else if (key === 'text') node.textContent = props[key];
+            else node.setAttribute(key, props[key]);
+          });
+          (children || []).forEach(function (child) { node.append(child); });
+          return node;
+        }
+        function say(message, isError) { app.replaceChildren(el('p', { class: isError ? 'error' : 'muted', text: message })); }
+        function when(event) {
+          var day = new Intl.DateTimeFormat(undefined, { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+          var time = new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' });
+          if (event.allDay && event.startDate) return day.format(new Date(event.startDate + 'T12:00:00')) + ', all day';
+          if (!event.startUtc) return 'Time to be confirmed';
+          var start = new Date(event.startUtc);
+          return day.format(start) + ', ' + time.format(start) + (event.endUtc ? ' to ' + time.format(new Date(event.endUtc)) : '');
+        }
+        function show(event) {
+          var email = el('input', { id: 'email', type: 'email', required: '', maxlength: '120', autocomplete: 'email' });
+          var message = el('p', { class: 'error', role: 'alert' });
+          var buttons = [['yes', 'Yes, I’m coming'], ['maybe', 'Maybe'], ['no', 'No, I can’t']].map(function (choice) {
+            var button = el('button', { type: 'button', text: choice[1] });
+            button.addEventListener('click', function () { reply(choice[0], email, message, buttons); });
+            return button;
+          });
+          app.replaceChildren(
+            el('h1', { text: event.title }),
+            el('p', { class: 'muted', text: when(event) }),
+            el('div', { class: 'card' }, [el('label', { text: 'Your email address (the one you were invited at)' }, [email]), el('div', { class: 'row' }, buttons), message]),
+          );
+        }
+        function reply(response, email, message, buttons) {
+          if (!email.value.trim()) { message.textContent = 'Please type your email address first.'; return; }
+          buttons.forEach(function (b) { b.disabled = true; });
+          message.textContent = '';
+          fetch(api + '/functions/v1/rsvp', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ t: token, email: email.value, response: response }) })
+            .then(function (r) { return r.json().then(function (body) { return { ok: r.ok, body: body }; }); })
+            .then(function (result) {
+              if (result.ok) return app.replaceChildren(el('h1', { text: 'Thank you' }), el('p', { text: 'Your reply was sent.' }));
+              message.textContent = (result.body && result.body.error) || 'Something went wrong. Please try again.';
+              buttons.forEach(function (b) { b.disabled = false; });
+            })
+            .catch(function () { message.textContent = "Couldn't reach the server. Check your connection and try again."; buttons.forEach(function (b) { b.disabled = false; }); });
+        }
+        if (!apiOk || !/^chrsvp_[A-Za-z0-9_-]{20,90}$/.test(token)) return say('This invitation link is not valid.', true);
+        fetch(api + '/functions/v1/rsvp?t=' + encodeURIComponent(token))
+          .then(function (r) { return r.json().then(function (body) { return { ok: r.ok, body: body }; }); })
+          .then(function (result) { if (!result.ok) return say('This invitation is no longer available.', true); show(result.body); })
+          .catch(function () { say("Couldn't load this page. Check your connection and try again.", true); });
+      })();
+    </script>
+  </body>
+</html>
