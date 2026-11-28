@@ -1,0 +1,1 @@
+import{a as e}from"./core-Cpzh1ZG6.js";async function t(){await e(`plugin:process|restart`)}export{t as relaunch};
